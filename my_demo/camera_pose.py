@@ -29,7 +29,7 @@ import os
 sys.path.append("base/droid_slam")
 sys.path.append("my_demo/moge_depth_intrinsics")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+from lietorch import SE3
 from tqdm import tqdm
 import numpy as np
 import torch
@@ -193,9 +193,11 @@ def save_poses(poses, scene_name, output_dir="outputs"):
   from pathlib import Path
 
   Path(output_dir).mkdir(parents=True, exist_ok=True)
+  poses_th = torch.as_tensor(poses, device="cpu")
+  w2c = SE3(poses_th).matrix().numpy()
   out_path = os.path.join(output_dir, "{}_poses.npy".format(scene_name))
-  print(poses.shape)
-  np.save(out_path, poses)
+  print(w2c.shape)
+  np.save(out_path, w2c)
   print("Saved poses to {}".format(out_path))
 
 

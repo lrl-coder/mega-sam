@@ -117,6 +117,8 @@ def save_full_reconstruction(
   disps = 1.0 / (np.array(senor_depth_list[:t]) + 1e-6)
 
   poses = full_traj  # .cpu().numpy()
+  poses_th = torch.as_tensor(poses, device="cpu")
+  cam_w2c = SE3(poses_th).matrix().numpy()
   intrinsics = droid.video.intrinsics[:t].cpu().numpy()
 
   Path("reconstructions/{}".format(scene_name)).mkdir(
@@ -125,13 +127,13 @@ def save_full_reconstruction(
   np.save("reconstructions/{}/images.npy".format(scene_name), images)
   np.save("reconstructions/{}/disps.npy".format(scene_name), disps)
   np.save("reconstructions/{}/poses.npy".format(scene_name), poses)
+  np.save("reconstructions/{}/cam_w2c.npy".format(scene_name), cam_w2c)
   np.save(
       "reconstructions/{}/intrinsics.npy".format(scene_name), intrinsics * 8.0
   )
   np.save("reconstructions/{}/motion_prob.npy".format(scene_name), motion_prob)
 
   intrinsics = intrinsics[0] * 8.0
-  poses_th = torch.as_tensor(poses, device="cpu")
   cam_c2w = SE3(poses_th).inv().matrix().numpy()
 
   K = np.eye(3)
