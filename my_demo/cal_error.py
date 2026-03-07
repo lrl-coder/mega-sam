@@ -75,8 +75,10 @@ def load_and_evaluate(pred_npy_path, gt_npy_path, verbose=True):
                   f"旋转误差: {re.item():.4f} 度 | 平移误差: {te.item():.6f}")
         print(f"\n  平均旋转误差 : {rot_err.mean().item():.4f} 度")
         print(f"  中位旋转误差 : {rot_err.median().item():.4f} 度")
+        print(f"  标准差旋转误差: {rot_err.std().item():.4f} 度")
         print(f"  平均平移误差 : {trans_err.mean().item():.6f}")
         print(f"  中位平移误差 : {trans_err.median().item():.6f}")
+        print(f"  标准差平移误差: {trans_err.std().item():.6f}")
 
     return rot_err, trans_err, frame_indices
 
@@ -108,8 +110,8 @@ def save_csv(output_dir, details_rows, summary_rows):
 
     summary.csv 列:
         video_id, num_frames,
-        mean_rot_err_deg, median_rot_err_deg,
-        mean_trans_err,   median_trans_err
+        mean_rot_err_deg, median_rot_err_deg, std_rot_err_deg,
+        mean_trans_err,   median_trans_err,   std_trans_err
     最后一行为全局汇总（video_id = "ALL"）。
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -128,8 +130,8 @@ def save_csv(output_dir, details_rows, summary_rows):
     with open(summary_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["video_id", "num_frames",
-                         "mean_rot_err_deg", "median_rot_err_deg",
-                         "mean_trans_err",   "median_trans_err"])
+                         "mean_rot_err_deg", "median_rot_err_deg", "std_rot_err_deg",
+                         "mean_trans_err",   "median_trans_err",   "std_trans_err"])
         writer.writerows(summary_rows)
     print(f"[CSV] 汇总结果已保存: {summary_path}")
 
@@ -200,8 +202,10 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None):
                 len(frame_indices),
                 f"{rot_err.mean().item():.6f}",
                 f"{rot_err.median().item():.6f}",
+                f"{rot_err.std().item():.6f}",
                 f"{trans_err.mean().item():.8f}",
                 f"{trans_err.median().item():.8f}",
+                f"{trans_err.std().item():.8f}",
             ])
 
             all_rot_errs.append(rot_err)
@@ -222,8 +226,10 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None):
         print("\n===== 全局汇总（所有视频所有帧）=====")
         print(f"  平均旋转误差 : {all_rot_cat.mean().item():.4f} 度")
         print(f"  中位旋转误差 : {all_rot_cat.median().item():.4f} 度")
+        print(f"  标准差旋转误差: {all_rot_cat.std().item():.4f} 度")
         print(f"  平均平移误差 : {all_trans_cat.mean().item():.6f}")
         print(f"  中位平移误差 : {all_trans_cat.median().item():.6f}")
+        print(f"  标准差平移误差: {all_trans_cat.std().item():.6f}")
 
         # 全局汇总追加到 summary_rows 末尾
         summary_rows.append([
@@ -231,8 +237,10 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None):
             len(all_rot_cat),
             f"{all_rot_cat.mean().item():.6f}",
             f"{all_rot_cat.median().item():.6f}",
+            f"{all_rot_cat.std().item():.6f}",
             f"{all_trans_cat.mean().item():.8f}",
             f"{all_trans_cat.median().item():.8f}",
+            f"{all_trans_cat.std().item():.8f}",
         ])
 
         if output_dir:
@@ -268,8 +276,10 @@ def evaluate_single_file(pred_path, gt_path, output_dir=None):
                 len(frame_indices),
                 f"{rot_err.mean().item():.6f}",
                 f"{rot_err.median().item():.6f}",
+                f"{rot_err.std().item():.6f}",
                 f"{trans_err.mean().item():.8f}",
                 f"{trans_err.median().item():.8f}",
+                f"{trans_err.std().item():.8f}",
             ],
             # 单文件时全局汇总与本视频相同，单独标注
             [
@@ -277,8 +287,10 @@ def evaluate_single_file(pred_path, gt_path, output_dir=None):
                 len(frame_indices),
                 f"{rot_err.mean().item():.6f}",
                 f"{rot_err.median().item():.6f}",
+                f"{rot_err.std().item():.6f}",
                 f"{trans_err.mean().item():.8f}",
                 f"{trans_err.median().item():.8f}",
+                f"{trans_err.std().item():.8f}",
             ],
         ]
         save_csv(output_dir, details_rows, summary_rows)
