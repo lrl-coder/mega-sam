@@ -1,3 +1,7 @@
+import os
+import re
+import csv
+import glob
 import torch
 import numpy as np
 import argparse
@@ -10,112 +14,312 @@ def compute_camera_errors(extr_est, extr_gt):
     :param extr_gt: 真实的 w2c 矩阵, shape (T, 4, 4)
     :return: rot_errors (度), trans_errors (距离单位)
     """
-    # 1. 提取 R (T, 3, 3) 和 t (T, 3, 1)
     R_est = extr_est[:, :3, :3]
     t_est = extr_est[:, :3, 3:4]
+    R_gt  = extr_gt[:, :3, :3]
+    t_gt  = extr_gt[:, :3, 3:4]
 
-    R_gt = extr_gt[:, :3, :3]
-    t_gt = extr_gt[:, :3, 3:4]
-
-    # ====================
-    # 计算旋转误差 (Rotation Error)
-    # ====================
-    # 计算相对旋转 R_rel = R_est @ R_gt^T
+    # 旋转误差
     R_rel = torch.bmm(R_est, R_gt.transpose(1, 2))
-
-    # 计算 Trace
     trace = R_rel.diagonal(dim1=-2, dim2=-1).sum(-1)
-
-    # 限制在 [-1, 1] 范围内，防止浮点误差导致 arccos 产生 NaN
     cos_theta = torch.clamp((trace - 1.0) / 2.0, -1.0, 1.0)
+    rot_errors_deg = torch.rad2deg(torch.acos(cos_theta))
 
-    # 计算角度并转为度数
-    rot_errors_rad = torch.acos(cos_theta)
-    rot_errors_deg = torch.rad2deg(rot_errors_rad)
-
-    # ====================
-    # 计算平移误差 (Translation Error)
-    # ====================
-    # 计算相机光心在世界坐标系下的位置: C = -R^T @ t
-    C_est = -torch.bmm(R_est.transpose(1, 2), t_est).squeeze(-1)  # (T, 3)
-    C_gt = -torch.bmm(R_gt.transpose(1, 2), t_gt).squeeze(-1)     # (T, 3)
-
-    # 计算 L2 距离
-    trans_errors = torch.norm(C_est - C_gt, dim=-1)  # (T,)
+    # 平移误差（相机光心 L2 距离）
+    C_est = -torch.bmm(R_est.transpose(1, 2), t_est).squeeze(-1)
+    C_gt  = -torch.bmm(R_gt.transpose(1, 2),  t_gt).squeeze(-1)
+    trans_errors = torch.norm(C_est - C_gt, dim=-1)
 
     return rot_errors_deg, trans_errors
 
 
-def load_and_evaluate(pred_npy_path, gt_npy_path):
+def load_and_evaluate(pred_npy_path, gt_npy_path, verbose=True):
     """
     从 npy 文件加载外参数据并计算误差。
 
     :param pred_npy_path: 预测外参 npy 路径，数组 shape 为 (M, 4, 4)
     :param gt_npy_path:   GT 外参 npy 路径，字典包含：
-                            - 'extrinsics'       : shape (T, 4, 4) 的 GT 外参矩阵
-                            - 'video_decode_frame': GT 对应的真实帧索引，如 [2, 3, 4, 5]
+                            - 'extrinsics'       : shape (T, 4, 4)
+                            - 'video_decode_frame': 真实帧索引，长度 T
+    :param verbose:       是否打印逐帧误差详情
+    :return: (rot_err, trans_err, frame_indices)  均为长度 T 的 Tensor/ndarray
     """
-    # ---------- 加载数据 ----------
-    # 预测: shape (M, 4, 4)
-    pred_arr = np.load(pred_npy_path)  # ndarray (M, 4, 4)
+    pred_arr    = np.load(pred_npy_path)
+    gt_dict     = np.load(gt_npy_path, allow_pickle=True).item()
+    extr_gt_arr = gt_dict['extrinsics']
+    frame_indices = np.array(gt_dict['video_decode_frame'], dtype=np.int64)
 
-    # GT: 字典
-    gt_dict = np.load(gt_npy_path, allow_pickle=True).item()
-    extr_gt_arr = gt_dict['extrinsics']           # ndarray (T, 4, 4)
-    frame_indices = gt_dict['video_decode_frame']  # ndarray 或 list，长度为 T
-
-    frame_indices = np.array(frame_indices, dtype=np.int64)
     T = len(frame_indices)
     M = pred_arr.shape[0]
 
-    print(f"预测外参帧数 M = {M}")
-    print(f"GT  外参帧数 T = {T}")
-    print(f"GT 对应的真实帧索引: {frame_indices}")
+    if verbose:
+        print(f"  预测外参帧数 M = {M}")
+        print(f"  GT  外参帧数 T = {T}")
+        print(f"  GT 对应的真实帧索引: {frame_indices}")
 
     assert M >= T, f"预测帧数 M={M} 必须大于等于 GT 帧数 T={T}"
     assert frame_indices.max() < M, (
         f"帧索引最大值 {frame_indices.max()} 超出预测数组范围 [0, {M-1}]"
     )
 
-    # ---------- 按帧索引从预测中截取 ----------
-    # pred_arr[frame_indices] → shape (T, 4, 4)
-    pred_selected = pred_arr[frame_indices]
-
-    # ---------- 转为 Tensor ----------
+    pred_selected   = pred_arr[frame_indices]
     extr_est_tensor = torch.tensor(pred_selected, dtype=torch.float64)
     extr_gt_tensor  = torch.tensor(extr_gt_arr,   dtype=torch.float64)
 
-    # ---------- 计算误差 ----------
     rot_err, trans_err = compute_camera_errors(extr_est_tensor, extr_gt_tensor)
 
-    print("\n===== 逐帧误差 =====")
-    for i, (fi, re, te) in enumerate(zip(frame_indices, rot_err, trans_err)):
-        print(f"  GT帧 {i:3d} (预测帧索引 {fi:4d}) | 旋转误差: {re.item():.4f} 度 | 平移误差: {te.item():.6f}")
+    if verbose:
+        print("\n  ===== 逐帧误差 =====")
+        for i, (fi, re, te) in enumerate(zip(frame_indices, rot_err, trans_err)):
+            print(f"    GT帧 {i:3d} (预测帧索引 {fi:4d}) | "
+                  f"旋转误差: {re.item():.4f} 度 | 平移误差: {te.item():.6f}")
+        print(f"\n  平均旋转误差 : {rot_err.mean().item():.4f} 度")
+        print(f"  中位旋转误差 : {rot_err.median().item():.4f} 度")
+        print(f"  平均平移误差 : {trans_err.mean().item():.6f}")
+        print(f"  中位平移误差 : {trans_err.median().item():.6f}")
 
-    print("\n===== 汇总 =====")
-    print(f"平均旋转误差 : {rot_err.mean().item():.4f} 度")
-    print(f"中位旋转误差 : {rot_err.median().item():.4f} 度")
-    print(f"平均平移误差 : {trans_err.mean().item():.6f}")
-    print(f"中位平移误差 : {trans_err.median().item():.6f}")
+    return rot_err, trans_err, frame_indices
+
+
+def build_gt_index(gt_dir):
+    """
+    扫描 GT 目录，构建 video_id -> gt_npy_path 的映射。
+    GT 文件名格式: <prefix>_<video_id>_ep_<suffix>.npy
+    例如: somethingsomethingv2_105211_ep_000000.npy  ->  video_id = '105211'
+    """
+    gt_index = {}
+    for fpath in glob.glob(os.path.join(gt_dir, "*.npy")):
+        fname = os.path.basename(fpath)
+        m = re.search(r'_(\d+)_ep_', fname)
+        if m:
+            vid = m.group(1)
+            if vid in gt_index:
+                print(f"  [警告] video_id={vid} 存在多个GT文件，将使用: {fpath}")
+            gt_index[vid] = fpath
+    return gt_index
+
+
+def save_csv(output_dir, details_rows, summary_rows):
+    """
+    将逐帧明细和汇总结果分别保存为 CSV 文件。
+
+    details.csv 列:
+        video_id, gt_frame_idx, pred_frame_idx, rot_err_deg, trans_err
+
+    summary.csv 列:
+        video_id, num_frames,
+        mean_rot_err_deg, median_rot_err_deg,
+        mean_trans_err,   median_trans_err
+    最后一行为全局汇总（video_id = "ALL"）。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ---------- 逐帧明细 ----------
+    details_path = os.path.join(output_dir, "details.csv")
+    with open(details_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["video_id", "gt_frame_idx", "pred_frame_idx",
+                         "rot_err_deg", "trans_err"])
+        writer.writerows(details_rows)
+    print(f"\n[CSV] 逐帧明细已保存: {details_path}")
+
+    # ---------- 汇总 ----------
+    summary_path = os.path.join(output_dir, "summary.csv")
+    with open(summary_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["video_id", "num_frames",
+                         "mean_rot_err_deg", "median_rot_err_deg",
+                         "mean_trans_err",   "median_trans_err"])
+        writer.writerows(summary_rows)
+    print(f"[CSV] 汇总结果已保存: {summary_path}")
+
+
+def evaluate_folder(pred_dir, gt_dir, output_dir=None):
+    """
+    批量评测：遍历预测目录中所有 *_poses.npy 文件，
+    按 video_id 匹配 GT 目录中的对应文件并计算误差。
+    若指定 output_dir，则将结果保存为 CSV。
+
+    预测文件名格式: <video_id>_poses.npy
+    GT    文件名格式: <prefix>_<video_id>_ep_<suffix>.npy
+    """
+    gt_index = build_gt_index(gt_dir)
+    print(f"GT 目录共找到 {len(gt_index)} 个文件: {gt_dir}\n")
+
+    pred_files = sorted(glob.glob(os.path.join(pred_dir, "*_poses.npy")))
+    if not pred_files:
+        print(f"[错误] 预测目录中未找到 *_poses.npy 文件: {pred_dir}")
+        return
+
+    all_rot_errs   = []
+    all_trans_errs = []
+    details_rows   = []   # 逐帧明细
+    summary_rows   = []   # 每视频汇总
+    matched = 0
+    skipped = 0
+
+    for pred_path in pred_files:
+        fname = os.path.basename(pred_path)
+        m = re.match(r'^(\d+)_poses\.npy$', fname)
+        if not m:
+            print(f"  [跳过] 文件名不符合格式 '<video_id>_poses.npy': {fname}")
+            skipped += 1
+            continue
+
+        video_id = m.group(1)
+        if video_id not in gt_index:
+            print(f"  [跳过] video_id={video_id} 在GT目录中未找到对应文件")
+            skipped += 1
+            continue
+
+        gt_path = gt_index[video_id]
+        print(f"{'='*60}")
+        print(f"video_id : {video_id}")
+        print(f"预测文件 : {pred_path}")
+        print(f"GT  文件 : {gt_path}")
+
+        try:
+            rot_err, trans_err, frame_indices = load_and_evaluate(
+                pred_path, gt_path, verbose=True
+            )
+
+            # --- 逐帧明细行 ---
+            pred_arr_tmp = np.load(pred_path)
+            for i, (fi, re, te) in enumerate(
+                    zip(frame_indices, rot_err, trans_err)):
+                details_rows.append([
+                    video_id,
+                    i,                      # GT 帧序号（0-based）
+                    int(fi),                # 对应预测帧索引
+                    f"{re.item():.6f}",
+                    f"{te.item():.8f}",
+                ])
+
+            # --- 本视频汇总行 ---
+            summary_rows.append([
+                video_id,
+                len(frame_indices),
+                f"{rot_err.mean().item():.6f}",
+                f"{rot_err.median().item():.6f}",
+                f"{trans_err.mean().item():.8f}",
+                f"{trans_err.median().item():.8f}",
+            ])
+
+            all_rot_errs.append(rot_err)
+            all_trans_errs.append(trans_err)
+            matched += 1
+
+        except Exception as e:
+            print(f"  [错误] 处理 video_id={video_id} 时发生异常: {e}")
+            skipped += 1
+
+    print(f"\n{'='*60}")
+    print(f"批量评测完成: 成功 {matched} 个，跳过/失败 {skipped} 个")
+
+    if all_rot_errs:
+        all_rot_cat   = torch.cat(all_rot_errs)
+        all_trans_cat = torch.cat(all_trans_errs)
+
+        print("\n===== 全局汇总（所有视频所有帧）=====")
+        print(f"  平均旋转误差 : {all_rot_cat.mean().item():.4f} 度")
+        print(f"  中位旋转误差 : {all_rot_cat.median().item():.4f} 度")
+        print(f"  平均平移误差 : {all_trans_cat.mean().item():.6f}")
+        print(f"  中位平移误差 : {all_trans_cat.median().item():.6f}")
+
+        # 全局汇总追加到 summary_rows 末尾
+        summary_rows.append([
+            "ALL",
+            len(all_rot_cat),
+            f"{all_rot_cat.mean().item():.6f}",
+            f"{all_rot_cat.median().item():.6f}",
+            f"{all_trans_cat.mean().item():.8f}",
+            f"{all_trans_cat.median().item():.8f}",
+        ])
+
+        if output_dir:
+            save_csv(output_dir, details_rows, summary_rows)
+
+
+def evaluate_single_file(pred_path, gt_path, output_dir=None):
+    """
+    单文件模式：计算误差并（可选）保存 CSV。
+    """
+    video_id = os.path.splitext(os.path.basename(pred_path))[0]
+    print(f"预测文件 : {pred_path}")
+    print(f"GT  文件 : {gt_path}\n")
+
+    rot_err, trans_err, frame_indices = load_and_evaluate(
+        pred_path, gt_path, verbose=True
+    )
+
+    if output_dir:
+        details_rows = []
+        for i, (fi, re, te) in enumerate(zip(frame_indices, rot_err, trans_err)):
+            details_rows.append([
+                video_id,
+                i,
+                int(fi),
+                f"{re.item():.6f}",
+                f"{te.item():.8f}",
+            ])
+
+        summary_rows = [
+            [
+                video_id,
+                len(frame_indices),
+                f"{rot_err.mean().item():.6f}",
+                f"{rot_err.median().item():.6f}",
+                f"{trans_err.mean().item():.8f}",
+                f"{trans_err.median().item():.8f}",
+            ],
+            # 单文件时全局汇总与本视频相同，单独标注
+            [
+                "ALL",
+                len(frame_indices),
+                f"{rot_err.mean().item():.6f}",
+                f"{rot_err.median().item():.6f}",
+                f"{trans_err.mean().item():.8f}",
+                f"{trans_err.median().item():.8f}",
+            ],
+        ]
+        save_csv(output_dir, details_rows, summary_rows)
 
     return rot_err, trans_err
 
 
 # --------- 入口 ---------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="计算预测外参与GT外参的旋转/平移误差")
+    parser = argparse.ArgumentParser(
+        description="计算预测外参与GT外参的旋转/平移误差（支持单文件或文件夹批量模式）"
+    )
     parser.add_argument(
         "--pred",
-        type=str,
-        required=True,
-        help="预测外参 npy 文件路径，shape (M, 4, 4)"
+        type=str, required=True,
+        help="预测外参路径：单个 npy 文件（shape M×4×4）或包含 *_poses.npy 的文件夹"
     )
     parser.add_argument(
         "--gt",
-        type=str,
-        required=True,
-        help="GT 外参 npy 文件路径（字典），包含 'extrinsics'(T,4,4) 和 'video_decode_frame'(T,)"
+        type=str, required=True,
+        help="GT 外参路径：单个 npy 文件（字典）或包含 GT npy 的文件夹"
+    )
+    parser.add_argument(
+        "--output",
+        type=str, default=None,
+        help="（可选）CSV 输出目录。会生成 details.csv（逐帧）和 summary.csv（汇总）。"
+             "若不指定则仅打印结果。"
     )
     args = parser.parse_args()
 
-    load_and_evaluate(args.pred, args.gt)
+    pred_is_dir = os.path.isdir(args.pred)
+    gt_is_dir   = os.path.isdir(args.gt)
+
+    if pred_is_dir and gt_is_dir:
+        evaluate_folder(args.pred, args.gt, output_dir=args.output)
+    elif (not pred_is_dir) and (not gt_is_dir):
+        evaluate_single_file(args.pred, args.gt, output_dir=args.output)
+    else:
+        raise ValueError(
+            f"--pred 和 --gt 必须同时为文件或同时为文件夹。\n"
+            f"  --pred 是{'文件夹' if pred_is_dir else '文件'}\n"
+            f"  --gt   是{'文件夹' if gt_is_dir   else '文件'}"
+        )
