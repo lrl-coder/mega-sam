@@ -184,14 +184,13 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None):
             )
 
             # --- 逐帧明细行 ---
-            pred_arr_tmp = np.load(pred_path)
-            for i, (fi, re, te) in enumerate(
+            for i, (fi, rot_e, te) in enumerate(
                     zip(frame_indices, rot_err, trans_err)):
                 details_rows.append([
                     video_id,
                     i,                      # GT 帧序号（0-based）
                     int(fi),                # 对应预测帧索引
-                    f"{re.item():.6f}",
+                    f"{rot_e.item():.6f}",
                     f"{te.item():.8f}",
                 ])
 
@@ -254,12 +253,12 @@ def evaluate_single_file(pred_path, gt_path, output_dir=None):
 
     if output_dir:
         details_rows = []
-        for i, (fi, re, te) in enumerate(zip(frame_indices, rot_err, trans_err)):
+        for i, (fi, rot_e, te) in enumerate(zip(frame_indices, rot_err, trans_err)):
             details_rows.append([
                 video_id,
                 i,
                 int(fi),
-                f"{re.item():.6f}",
+                f"{rot_e.item():.6f}",
                 f"{te.item():.8f}",
             ])
 
