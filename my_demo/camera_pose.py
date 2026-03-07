@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Test camera tracking on a single scene."""
+"""Test camera tracking on a single video or a folder of videos."""
 
 # pylint: disable=invalid-name
 # pylint: disable=g-importing-member
@@ -25,6 +25,7 @@
 
 import sys
 import os
+import glob
 
 sys.path.append("base/droid_slam")
 sys.path.append("my_demo/moge_depth_intrinsics")
@@ -34,100 +35,22 @@ from tqdm import tqdm
 import numpy as np
 import torch
 import cv2
-import glob
 import argparse
 import torch.nn.functional as F
 from utils_moge import MogePipeline
 from droid import Droid
 
-
-def image_stream(
-    image_list,
-    depth_list,
-    scene_name,
-    use_depth=False,
-    K=None,
-    stride=1,
-):
-  """image generator."""
-  del scene_name, stride
-
-  fx, fy, cx, cy = (
-      K[0, 0],
-      K[1, 1],
-      K[0, 2],
-      K[1, 2],
-  )  # np.loadtxt(os.path.join(datapath, 'calibration.txt')).tolist()
-
-  for t, (image_file) in enumerate(image_list):
-    image = cv2.imread(image_file)
-    # depth = cv2.imread(depth_file, cv2.IMREAD_ANYDEPTH) / 5000.
-    # depth = np.float32(np.load(depth_file)) / 300.0
-    # depth =  1. / pt_data["depth"]
-
-    depth = depth_list[t]
-    # mono_disp = mono_disp_list[t]
-    # mono_disp = np.float32(np.load(disp_file)) #/ 300.0
-    # depth = np.clip(
-    #     1.0 / ((1.0 / aligns[2]) * (aligns[0] * mono_disp + aligns[1])),
-    #     1e-4,
-    #     1e4,
-    # )
-    depth = np.clip(depth, 1e-4, 1e4)
-    depth[depth < 1e-2] = 0.0
-
-    # breakpoint()
-    h0, w0, _ = image.shape
-    h1 = int(h0 * np.sqrt((384 * 512) / (h0 * w0)))
-    w1 = int(w0 * np.sqrt((384 * 512) / (h0 * w0)))
-
-    image = cv2.resize(image, (w1, h1), interpolation=cv2.INTER_AREA)
-    image = image[: h1 - h1 % 8, : w1 - w1 % 8]
-
-    # if t == 4 or t == 29:
-    # imageio.imwrite("debug/camel_%d.png"%t, image[..., ::-1])
-
-    image = torch.as_tensor(image).permute(2, 0, 1)
-    # print("image ", image.shape)
-    # breakpoint()
-
-    depth = torch.as_tensor(depth)
-    depth = F.interpolate(
-        depth[None, None], (h1, w1), mode="nearest-exact"
-    ).squeeze()
-    depth = depth[: h1 - h1 % 8, : w1 - w1 % 8]
-
-    mask = torch.ones_like(depth)
-
-    intrinsics = torch.as_tensor([fx, fy, cx, cy])
-    intrinsics[0::2] *= w1 / w0
-    intrinsics[1::2] *= h1 / h0
-
-    if use_depth:
-      yield t, image[None], depth, intrinsics, mask
-    else:
-      yield t, image[None], intrinsics, mask
+# Supported video extensions
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v")
 
 
-def video_stream(
-    video_path,
-    depth_list,
-    scene_name,
-    use_depth=False,
-    K=None,
-    stride=1,
-):
-  """video frame generator."""
+def video_stream(video_path, depth_list, scene_name, use_depth=False, K=None, stride=1):
+  """Video frame generator."""
   del scene_name
   if stride < 1:
     stride = 1
 
-  fx, fy, cx, cy = (
-      K[0, 0],
-      K[1, 1],
-      K[0, 2],
-      K[1, 2],
-  )
+  fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
 
   cap = cv2.VideoCapture(video_path)
   if not cap.isOpened():
@@ -148,12 +71,6 @@ def video_stream(
         continue
 
       depth = depth_list[frame_idx]
-      # mono_disp = mono_disp_list[frame_idx]
-      # depth = np.clip(
-      #     1.0 / ((1.0 / aligns[2]) * (aligns[0] * mono_disp + aligns[1])),
-      #     1e-4,
-      #     1e4,
-      # )
       depth = np.clip(depth, 1e-4, 1e4)
       depth[depth < 1e-2] = 0.0
 
@@ -201,234 +118,68 @@ def save_poses(poses, scene_name, output_dir="outputs"):
   print("Saved poses to {}".format(out_path))
 
 
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser()
-  parser.add_argument("--datapath")
-  parser.add_argument("--weights", default="checkpoints/megasam_final.pth")
-  parser.add_argument("--buffer", type=int, default=1024)
-  parser.add_argument("--image_size", default=[240, 320])
-  parser.add_argument("--disable_vis", default=True)
+def process_video(video_path, args, moge):
+  """Run depth inference + DROID-SLAM tracking on a single video file."""
+  scene_id = os.path.splitext(os.path.basename(video_path))[0]
+  print("\n========== Processing: {} ==========".format(video_path))
 
-  parser.add_argument("--beta", type=float, default=0.3)
-  parser.add_argument(
-      "--filter_thresh", type=float, default=2.0
-  )  # motion threhold for keyframe
-  parser.add_argument("--warmup", type=int, default=8)
-  parser.add_argument("--keyframe_thresh", type=float, default=2.0)
-  parser.add_argument("--frontend_thresh", type=float, default=12.0)
-  parser.add_argument("--frontend_window", type=int, default=25)
-  parser.add_argument("--frontend_radius", type=int, default=2)
-  parser.add_argument("--frontend_nms", type=int, default=1)
+  # Read first frame to determine image size for intrinsics
+  cap = cv2.VideoCapture(video_path)
+  ok, img_0 = cap.read()
+  cap.release()
+  if not ok:
+    print("[WARN] Failed to read first frame, skipping: {}".format(video_path))
+    return
 
-  parser.add_argument("--stereo", action="store_true")
-  # --depth 参数未被实际使用：image_stream / video_stream 中 use_depth 已硬编码为 True，
-  # args.depth 的值不会对运行逻辑产生任何影响。
-  # parser.add_argument("--depth", action="store_true")
-  parser.add_argument("--upsample", action="store_true")
-  parser.add_argument("--output_dir", default="outputs")
-
-  parser.add_argument("--backend_thresh", type=float, default=16.0)
-  parser.add_argument("--backend_radius", type=int, default=2)
-  parser.add_argument("--backend_nms", type=int, default=3)
-
-  # parser.add_argument(
-  #     "--mono_depth_path", default="Depth-Anything/video_visualization"
-  # )
-  # parser.add_argument("--metric_depth_path", default="UniDepth/outputs ")
-  args = parser.parse_args()
-
-  print("Running evaluation on {}".format(args.datapath))
-  print(args)
-
-  base = os.path.basename(args.datapath.rstrip("\\/"))
-  scene_id = os.path.splitext(base)[0] if base else "scene"
-
-  input_is_video = os.path.isfile(args.datapath)
-  image_list = []
-  if not input_is_video:
-    image_list = sorted(
-        glob.glob(os.path.join("%s" % (args.datapath), "*.jpg"))
-    )
-    image_list += sorted(
-        glob.glob(os.path.join("%s" % (args.datapath), "*.png"))
-    )
-    if not image_list:
-      raise ValueError("No images found in {}".format(args.datapath))
-
-  # NOTE Mono is inverse depth, but metric-depth is depth!
-  # mono_disp_paths = sorted(
-  #     glob.glob(
-  #         os.path.join("%s/%s" % (args.mono_depth_path, scene_id), "*.npy")
-  #     )
-  # )
-  # metric_depth_paths = sorted(
-  #     glob.glob(
-  #         os.path.join("%s/%s" % (args.metric_depth_path, scene_id), "*.npz")
-  #     )
-  # )
-
-  if input_is_video:
-    cap = cv2.VideoCapture(args.datapath)
-    ok, img_0 = cap.read()
-    cap.release()
-    if not ok:
-      raise ValueError("Failed to read first frame from {}".format(args.datapath))
-  else:
-    img_0 = cv2.imread(image_list[0])
-  # scales = []
-  # shifts = []
-  # mono_disp_list = []
-  # fovs = []
-  # for t, (mono_disp_file, metric_depth_file) in enumerate(
-  #     zip(mono_disp_paths, metric_depth_paths)
-  # ):
-  #   da_disp = np.float32(np.load(mono_disp_file))  # / 300.0
-  #   uni_data = np.load(metric_depth_file)
-  #   metric_depth = uni_data["depth"]
-  #
-  #   fovs.append(uni_data["fov"])
-  #
-  #   da_disp = cv2.resize(
-  #       da_disp,
-  #       (metric_depth.shape[1], metric_depth.shape[0]),
-  #       interpolation=cv2.INTER_NEAREST_EXACT,
-  #   )
-  #   mono_disp_list.append(da_disp)
-  #   gt_disp = 1.0 / (metric_depth + 1e-8)
-  #
-  #   # avoid some bug from UniDepth
-  #   valid_mask = (metric_depth < 2.0) & (da_disp < 0.02)
-  #   gt_disp[valid_mask] = 1e-2
-  #
-  #   # avoid cases sky dominate entire video
-  #   sky_ratio = np.sum(da_disp < 0.01) / (da_disp.shape[0] * da_disp.shape[1])
-  #   if sky_ratio > 0.5:
-  #     non_sky_mask = da_disp > 0.01
-  #     gt_disp_ms = (
-  #         gt_disp[non_sky_mask] - np.median(gt_disp[non_sky_mask]) + 1e-8
-  #     )
-  #     da_disp_ms = (
-  #         da_disp[non_sky_mask] - np.median(da_disp[non_sky_mask]) + 1e-8
-  #     )
-  #     scale = np.median(gt_disp_ms / da_disp_ms)
-  #     shift = np.median(gt_disp[non_sky_mask] - scale * da_disp[non_sky_mask])
-  #   else:
-  #     gt_disp_ms = gt_disp - np.median(gt_disp) + 1e-8
-  #     da_disp_ms = da_disp - np.median(da_disp) + 1e-8
-  #     scale = np.median(gt_disp_ms / da_disp_ms)
-  #     shift = np.median(gt_disp - scale * da_disp)
-  #
-  #   gt_disp_ms = gt_disp - np.median(gt_disp) + 1e-8
-  #   da_disp_ms = da_disp - np.median(da_disp) + 1e-8
-  #
-  #   scale = np.median(gt_disp_ms / da_disp_ms)
-  #   shift = np.median(gt_disp - scale * da_disp)
-  #
-  #   scales.append(scale)
-  #   shifts.append(shift)
-
-  moge = MogePipeline()
+  # Run MoGe depth inference on all video frames
   depth_list = []
   fovs = []
-  if input_is_video:
-    cap = cv2.VideoCapture(args.datapath)
-    if not cap.isOpened():
-      raise ValueError("Failed to open video: {}".format(args.datapath))
-    try:
-      while True:
-        ok, frame = cap.read()
-        if not ok:
-          break
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        depth, fov = moge.infer(frame_rgb)
-        depth_list.append(depth)
-        fovs.append(fov)
-    finally:
-      cap.release()
-  else:
-    for image_file in image_list:
-      frame = cv2.imread(image_file)
+  cap = cv2.VideoCapture(video_path)
+  if not cap.isOpened():
+    print("[WARN] Failed to open video, skipping: {}".format(video_path))
+    return
+  try:
+    while True:
+      ok, frame = cap.read()
+      if not ok:
+        break
       frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
       depth, fov = moge.infer(frame_rgb)
       depth_list.append(depth)
       fovs.append(fov)
-  print(depth_list)
+  finally:
+    cap.release()
+
+  if not depth_list:
+    print("[WARN] No frames decoded, skipping: {}".format(video_path))
+    return
+
   print("************** MoGe FOV ", np.median(fovs))
   ff = img_0.shape[1] / (2 * np.tan(np.radians(np.median(fovs) / 2.0)))
   K = np.eye(3)
-  K[0, 0] = (
-      ff * 1.0
-  )  # pp_intrinsic[0]  * (img_0.shape[1] / (pp_intrinsic[1] * 2))
-  K[1, 1] = (
-      ff * 1.0
-  )  # pp_intrinsic[0]  * (img_0.shape[0] / (pp_intrinsic[2] * 2))
-  K[0, 2] = (
-      img_0.shape[1] / 2.0
-  )  # pp_intrinsic[1]) * (img_0.shape[1] / (pp_intrinsic[1] * 2))
-  K[1, 2] = (
-      img_0.shape[0] / 2.0
-  )  # (pp_intrinsic[2]) * (img_0.shape[0] / (pp_intrinsic[2] * 2))
+  K[0, 0] = ff
+  K[1, 1] = ff
+  K[0, 2] = img_0.shape[1] / 2.0
+  K[1, 2] = img_0.shape[0] / 2.0
 
-  # ss_product = np.array(scales) * np.array(shifts)
-  # med_idx = np.argmin(np.abs(ss_product - np.median(ss_product)))
-  #
-  # align_scale = scales[med_idx]  # np.median(np.array(scales))
-  # align_shift = shifts[med_idx]  # np.median(np.array(shifts))
-  # normalize_scale = (
-  #     np.percentile((align_scale * np.array(mono_disp_list) + align_shift), 98)
-  #     / 2.0
-  # )
-  #
-  # aligns = (align_scale, align_shift, normalize_scale)
-
-  if input_is_video:
-    stream = video_stream(
-        args.datapath,
-        depth_list,
-        scene_id,
-        use_depth=True,
-        K=K,
-    )
-  else:
-    stream = image_stream(
-        image_list,
-        depth_list,
-        scene_id,
-        use_depth=True,
-        K=K,
-    )
-
-  for t, image, depth, intrinsics, mask in tqdm(stream):
-    if not args.disable_vis:
-      show_image(image[0])
-
-    # breakpoint()
+  # Tracking pass
+  stream = video_stream(video_path, depth_list, scene_id, use_depth=True, K=K)
+  droid = None
+  for t, image, depth, intrinsics, mask in tqdm(stream, desc="Tracking"):
     if t == 0:
       args.image_size = [image.shape[2], image.shape[3]]
       droid = Droid(args)
-
     droid.track(t, image, depth, intrinsics=intrinsics, mask=mask)
 
-  # last frame
+  if droid is None:
+    print("[WARN] No frames tracked, skipping: {}".format(video_path))
+    return
+
+  # Last frame
   droid.track_final(t, image, depth, intrinsics=intrinsics, mask=mask)
 
-  if input_is_video:
-    term_stream = video_stream(
-        args.datapath,
-        depth_list,
-        scene_id,
-        use_depth=True,
-        K=K,
-    )
-  else:
-    term_stream = image_stream(
-        image_list,
-        depth_list,
-        scene_id,
-        use_depth=True,
-        K=K,
-    )
-
+  # Termination / BA pass
+  term_stream = video_stream(video_path, depth_list, scene_id, use_depth=True, K=K)
   traj_est, depth_est, motion_prob = droid.terminate(
       term_stream,
       _opt_intr=True,
@@ -437,3 +188,70 @@ if __name__ == "__main__":
   )
 
   save_poses(traj_est, scene_id, output_dir=args.output_dir)
+
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+      "--datapath",
+      required=True,
+      help="Path to a single video file OR a folder containing multiple videos.",
+  )
+  parser.add_argument("--weights", default="checkpoints/megasam_final.pth")
+  parser.add_argument("--buffer", type=int, default=1024)
+  parser.add_argument("--image_size", default=[240, 320])
+  parser.add_argument("--disable_vis", default=True)
+
+  parser.add_argument("--beta", type=float, default=0.3)
+  parser.add_argument("--filter_thresh", type=float, default=2.0)
+  parser.add_argument("--warmup", type=int, default=8)
+  parser.add_argument("--keyframe_thresh", type=float, default=2.0)
+  parser.add_argument("--frontend_thresh", type=float, default=12.0)
+  parser.add_argument("--frontend_window", type=int, default=25)
+  parser.add_argument("--frontend_radius", type=int, default=2)
+  parser.add_argument("--frontend_nms", type=int, default=1)
+
+  parser.add_argument("--stereo", action="store_true")
+  parser.add_argument("--upsample", action="store_true")
+  parser.add_argument("--output_dir", default="outputs")
+
+  parser.add_argument("--backend_thresh", type=float, default=16.0)
+  parser.add_argument("--backend_radius", type=int, default=2)
+  parser.add_argument("--backend_nms", type=int, default=3)
+
+  args = parser.parse_args()
+
+  print("Running on: {}".format(args.datapath))
+  print(args)
+
+  # Collect video paths
+  datapath = args.datapath.rstrip("\\/")
+  if os.path.isfile(datapath):
+    # Single video file
+    video_paths = [datapath]
+  elif os.path.isdir(datapath):
+    # Folder: collect all supported video files (non-recursive)
+    video_paths = sorted([
+        p for p in glob.glob(os.path.join(datapath, "*"))
+        if os.path.isfile(p) and p.lower().endswith(VIDEO_EXTENSIONS)
+    ])
+    if not video_paths:
+      raise ValueError(
+          "No supported video files found in folder: {}".format(datapath)
+      )
+    print("Found {} video(s) in folder.".format(len(video_paths)))
+  else:
+    raise ValueError("--datapath must be a video file or a directory: {}".format(datapath))
+
+  # Load MoGe once and reuse across all videos
+  moge = MogePipeline()
+
+  for i, video_path in enumerate(video_paths):
+    print("\n[{}/{}] {}".format(i + 1, len(video_paths), video_path))
+    try:
+      process_video(video_path, args, moge)
+    except Exception as e:  # pylint: disable=broad-except
+      print("[ERROR] Failed to process {}: {}".format(video_path, e))
+      continue
+
+  print("\nAll done. Results saved to: {}".format(args.output_dir))
