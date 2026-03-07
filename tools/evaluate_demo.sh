@@ -14,12 +14,11 @@
 # limitations under the License.
 # ==============================================================================
 
-DATA_PATH=/home/zhengqili/filestore/DAVIS/DAVIS/JPEGImages/480p
+DATA_PATH=my_demo/test_data
 CKPT_PATH=checkpoints/megasam_final.pth
 
 evalset=(
-   swing
-   breakdance-flare
+   frames
 )
 
 
