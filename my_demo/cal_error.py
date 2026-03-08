@@ -108,7 +108,7 @@ def build_gt_index(gt_dir):
 def plot_error_histograms(rot_errors, trans_errors,
                           title_prefix="", save_path=None):
     """
-    绘制旋转误差和平移误差的直方图。
+    绘制旋转误差和平移误差的直方图
 
     :param rot_errors:   旋转误差数组（度），numpy array 或 torch.Tensor
     :param trans_errors: 平移误差数组，numpy array 或 torch.Tensor
@@ -123,38 +123,40 @@ def plot_error_histograms(rot_errors, trans_errors,
     rot_errors   = rot_errors.astype(float)
     trans_errors = trans_errors.astype(float)
 
+    plt.rcParams.update({
+        'figure.facecolor': 'white',
+        'axes.facecolor':   'white',
+        'axes.edgecolor':   '#333333',
+        'axes.linewidth':   0.8,
+        'axes.grid':        True,
+        'grid.color':       '#dddddd',
+        'grid.linestyle':   '--',
+        'grid.linewidth':   0.6,
+        'xtick.direction':  'in',
+        'ytick.direction':  'in',
+        'xtick.color':      '#333333',
+        'ytick.color':      '#333333',
+        'font.size':        10,
+    })
+
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    fig.patch.set_facecolor('#1a1a2e')
+    fig.patch.set_facecolor('white')
 
-    COLORS = {'bar': '#6c63ff', 'mean': '#ff6584', 'median': '#43e97b',
-              'text': '#e0e0e0', 'bg': '#16213e', 'grid': '#2a2a4a'}
-
-    def _draw_hist(ax, data, xlabel, title, color, unit=""):
-        ax.set_facecolor(COLORS['bg'])
+    def _draw_hist(ax, data, xlabel, title, bar_color, mean_color, median_color, unit=""):
         n_bins = max(20, min(60, len(data) // 3))
-        counts, bins, patches = ax.hist(
-            data, bins=n_bins,
-            color=color, edgecolor='#ffffff22', linewidth=0.5, alpha=0.85
-        )
-        # 渐变上色：按值大小从冷到暖
-        bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        norm_val = (bin_centers - bin_centers.min()) / \
-                   (bin_centers.max() - bin_centers.min() + 1e-12)
-        cmap = plt.cm.plasma
-        for patch, nv in zip(patches, norm_val):
-            patch.set_facecolor(cmap(0.2 + 0.6 * nv))
+        ax.hist(data, bins=n_bins,
+                color=bar_color, edgecolor='white', linewidth=0.5, alpha=0.82)
 
         mean_val   = data.mean()
         median_val = float(np.median(data))
         std_val    = data.std()
 
-        ax.axvline(mean_val,   color=COLORS['mean'],   linewidth=1.8,
-                   linestyle='--', label=f'Mean:   {mean_val:.4f}{unit}')
-        ax.axvline(median_val, color=COLORS['median'], linewidth=1.8,
-                   linestyle='-.',  label=f'Median: {median_val:.4f}{unit}')
+        ax.axvline(mean_val,   color=mean_color,   linewidth=1.8, linestyle='--',
+                   label=f'Mean:   {mean_val:.4f}{unit}')
+        ax.axvline(median_val, color=median_color, linewidth=1.8, linestyle='-.',
+                   label=f'Median: {median_val:.4f}{unit}')
 
-        # 统计文本框
-        stats_text = (f"N = {len(data)}\n"
+        stats_text = (f"N      = {len(data)}\n"
                       f"Mean   = {mean_val:.4f}{unit}\n"
                       f"Median = {median_val:.4f}{unit}\n"
                       f"Std    = {std_val:.4f}{unit}\n"
@@ -162,42 +164,39 @@ def plot_error_histograms(rot_errors, trans_errors,
                       f"Max    = {data.max():.4f}{unit}")
         ax.text(0.97, 0.97, stats_text, transform=ax.transAxes,
                 fontsize=8.5, verticalalignment='top', horizontalalignment='right',
-                color=COLORS['text'],
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='#0f3460',
-                          edgecolor='#6c63ff', alpha=0.85))
+                color='#222222', family='monospace',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='#f5f5f5',
+                          edgecolor='#aaaaaa', alpha=0.9))
 
-        ax.set_title(title, color=COLORS['text'], fontsize=12, pad=10, fontweight='bold')
-        ax.set_xlabel(xlabel, color=COLORS['text'], fontsize=10)
-        ax.set_ylabel('帧数 (Count)', color=COLORS['text'], fontsize=10)
-        ax.tick_params(colors=COLORS['text'], which='both')
-        for spine in ax.spines.values():
-            spine.set_edgecolor(COLORS['grid'])
+        ax.set_title(title, fontsize=12, pad=8, fontweight='bold', color='#222222')
+        ax.set_xlabel(xlabel, fontsize=10, color='#333333')
+        ax.set_ylabel('Count', fontsize=10, color='#333333')
         ax.yaxis.set_minor_locator(AutoMinorLocator())
         ax.xaxis.set_minor_locator(AutoMinorLocator())
-        ax.grid(True, linestyle='--', alpha=0.3, color=COLORS['grid'])
-        ax.grid(True, which='minor', linestyle=':', alpha=0.15, color=COLORS['grid'])
-        legend = ax.legend(fontsize=9, facecolor='#0f3460',
-                           edgecolor='#6c63ff', labelcolor=COLORS['text'])
+        ax.grid(True, which='minor', linestyle=':', linewidth=0.4, color='#eeeeee')
+        ax.legend(fontsize=9, framealpha=0.9, edgecolor='#aaaaaa')
+
+        # x 轴完全由数据自适应，不手动设置范围
+        ax.autoscale(axis='x', tight=False)
 
     _draw_hist(axes[0], rot_errors,
-               xlabel='旋转误差 (度)', title='Rotation Error Distribution',
-               color='#6c63ff', unit='°')
+               xlabel='Rotation Error (deg)', title='Rotation Error Distribution',
+               bar_color='#4C72B0', mean_color='#C44E52', median_color='#2CA02C',
+               unit='°')
     _draw_hist(axes[1], trans_errors,
-               xlabel='平移误差', title='Translation Error Distribution',
-               color='#43b5e9')
+               xlabel='Translation Error', title='Translation Error Distribution',
+               bar_color='#DD8452', mean_color='#C44E52', median_color='#2CA02C')
 
     prefix_str = f" — {title_prefix}" if title_prefix else ""
     fig.suptitle(f'Camera Pose Error Histograms{prefix_str}',
-                 color=COLORS['text'], fontsize=14, fontweight='bold', y=1.01)
+                 fontsize=13, fontweight='bold', y=1.01, color='#222222')
     plt.tight_layout()
 
     if save_path:
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight',
-                    facecolor=fig.get_facecolor())
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
         print(f"[图表] 直方图已保存: {save_path}")
     else:
-        matplotlib.use('TkAgg')
         plt.show()
     plt.close(fig)
 
