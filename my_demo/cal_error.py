@@ -5,6 +5,10 @@ import glob
 import torch
 import numpy as np
 import argparse
+import matplotlib
+matplotlib.use('Agg')  # 非交互后端，避免无 GUI 环境报错
+import matplotlib.pyplot as plt
+from matplotlib.ticker import AutoMinorLocator
 
 
 def compute_camera_errors(extr_est, extr_gt):
@@ -101,6 +105,101 @@ def build_gt_index(gt_dir):
     return gt_index
 
 
+def plot_error_histograms(rot_errors, trans_errors,
+                          title_prefix="", save_path=None):
+    """
+    绘制旋转误差和平移误差的直方图。
+
+    :param rot_errors:   旋转误差数组（度），numpy array 或 torch.Tensor
+    :param trans_errors: 平移误差数组，numpy array 或 torch.Tensor
+    :param title_prefix: 图标题前缀（例如视频 ID 或 "ALL"）
+    :param save_path:    若不为 None，则将图片保存到该路径，否则弹窗显示
+    """
+    if isinstance(rot_errors, torch.Tensor):
+        rot_errors = rot_errors.cpu().numpy()
+    if isinstance(trans_errors, torch.Tensor):
+        trans_errors = trans_errors.cpu().numpy()
+
+    rot_errors   = rot_errors.astype(float)
+    trans_errors = trans_errors.astype(float)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.patch.set_facecolor('#1a1a2e')
+
+    COLORS = {'bar': '#6c63ff', 'mean': '#ff6584', 'median': '#43e97b',
+              'text': '#e0e0e0', 'bg': '#16213e', 'grid': '#2a2a4a'}
+
+    def _draw_hist(ax, data, xlabel, title, color, unit=""):
+        ax.set_facecolor(COLORS['bg'])
+        n_bins = max(20, min(60, len(data) // 3))
+        counts, bins, patches = ax.hist(
+            data, bins=n_bins,
+            color=color, edgecolor='#ffffff22', linewidth=0.5, alpha=0.85
+        )
+        # 渐变上色：按值大小从冷到暖
+        bin_centers = 0.5 * (bins[:-1] + bins[1:])
+        norm_val = (bin_centers - bin_centers.min()) / \
+                   (bin_centers.max() - bin_centers.min() + 1e-12)
+        cmap = plt.cm.plasma
+        for patch, nv in zip(patches, norm_val):
+            patch.set_facecolor(cmap(0.2 + 0.6 * nv))
+
+        mean_val   = data.mean()
+        median_val = float(np.median(data))
+        std_val    = data.std()
+
+        ax.axvline(mean_val,   color=COLORS['mean'],   linewidth=1.8,
+                   linestyle='--', label=f'Mean:   {mean_val:.4f}{unit}')
+        ax.axvline(median_val, color=COLORS['median'], linewidth=1.8,
+                   linestyle='-.',  label=f'Median: {median_val:.4f}{unit}')
+
+        # 统计文本框
+        stats_text = (f"N = {len(data)}\n"
+                      f"Mean   = {mean_val:.4f}{unit}\n"
+                      f"Median = {median_val:.4f}{unit}\n"
+                      f"Std    = {std_val:.4f}{unit}\n"
+                      f"Min    = {data.min():.4f}{unit}\n"
+                      f"Max    = {data.max():.4f}{unit}")
+        ax.text(0.97, 0.97, stats_text, transform=ax.transAxes,
+                fontsize=8.5, verticalalignment='top', horizontalalignment='right',
+                color=COLORS['text'],
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='#0f3460',
+                          edgecolor='#6c63ff', alpha=0.85))
+
+        ax.set_title(title, color=COLORS['text'], fontsize=12, pad=10, fontweight='bold')
+        ax.set_xlabel(xlabel, color=COLORS['text'], fontsize=10)
+        ax.set_ylabel('帧数 (Count)', color=COLORS['text'], fontsize=10)
+        ax.tick_params(colors=COLORS['text'], which='both')
+        for spine in ax.spines.values():
+            spine.set_edgecolor(COLORS['grid'])
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.grid(True, linestyle='--', alpha=0.3, color=COLORS['grid'])
+        ax.grid(True, which='minor', linestyle=':', alpha=0.15, color=COLORS['grid'])
+        legend = ax.legend(fontsize=9, facecolor='#0f3460',
+                           edgecolor='#6c63ff', labelcolor=COLORS['text'])
+
+    _draw_hist(axes[0], rot_errors,
+               xlabel='旋转误差 (度)', title='Rotation Error Distribution', unit='°')
+    _draw_hist(axes[1], trans_errors,
+               xlabel='平移误差', title='Translation Error Distribution')
+
+    prefix_str = f" — {title_prefix}" if title_prefix else ""
+    fig.suptitle(f'Camera Pose Error Histograms{prefix_str}',
+                 color=COLORS['text'], fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+
+    if save_path:
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+        print(f"[图表] 直方图已保存: {save_path}")
+    else:
+        matplotlib.use('TkAgg')
+        plt.show()
+    plt.close(fig)
+
+
 def save_csv(output_dir, details_rows, summary_rows):
     """
     将逐帧明细和汇总结果分别保存为 CSV 文件。
@@ -136,7 +235,9 @@ def save_csv(output_dir, details_rows, summary_rows):
     print(f"[CSV] 汇总结果已保存: {summary_path}")
 
 
-def evaluate_folder(pred_dir, gt_dir, output_dir=None):
+def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
+    global _should_plot
+    _should_plot = plot
     """
     批量评测：遍历预测目录中所有 *_poses.npy 文件，
     按 video_id 匹配 GT 目录中的对应文件并计算误差。
@@ -246,8 +347,14 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None):
         if output_dir:
             save_csv(output_dir, details_rows, summary_rows)
 
+        if _should_plot:
+            save_path = os.path.join(output_dir, "error_histograms.png") \
+                        if output_dir else None
+            plot_error_histograms(all_rot_cat, all_trans_cat,
+                                  title_prefix="ALL", save_path=save_path)
 
-def evaluate_single_file(pred_path, gt_path, output_dir=None):
+
+def evaluate_single_file(pred_path, gt_path, output_dir=None, plot=True):
     """
     单文件模式：计算误差并（可选）保存 CSV。
     """
@@ -295,6 +402,12 @@ def evaluate_single_file(pred_path, gt_path, output_dir=None):
         ]
         save_csv(output_dir, details_rows, summary_rows)
 
+    if plot:
+        save_path = os.path.join(output_dir, "error_histograms.png") \
+                    if output_dir else None
+        plot_error_histograms(rot_err, trans_err,
+                              title_prefix=video_id, save_path=save_path)
+
     return rot_err, trans_err
 
 
@@ -319,18 +432,26 @@ if __name__ == "__main__":
         help="（可选）CSV 输出目录。会生成 details.csv（逐帧）和 summary.csv（汇总）。"
              "若不指定则仅打印结果。"
     )
+    parser.add_argument(
+        "--plot", dest="plot", action="store_true", default=True,
+        help="（默认启用）绘制误差直方图。若指定 --output 则保存图片，否则弹窗显示。"
+    )
+    parser.add_argument(
+        "--no-plot", dest="plot", action="store_false",
+        help="禁用误差直方图输出。"
+    )
     args = parser.parse_args()
 
     pred_is_dir = os.path.isdir(args.pred)
     gt_is_dir   = os.path.isdir(args.gt)
 
     if pred_is_dir and gt_is_dir:
-        evaluate_folder(args.pred, args.gt, output_dir=args.output)
+        evaluate_folder(args.pred, args.gt, output_dir=args.output, plot=args.plot)
     elif (not pred_is_dir) and (not gt_is_dir):
-        evaluate_single_file(args.pred, args.gt, output_dir=args.output)
+        evaluate_single_file(args.pred, args.gt, output_dir=args.output, plot=args.plot)
     else:
         raise ValueError(
             f"--pred 和 --gt 必须同时为文件或同时为文件夹。\n"
             f"  --pred 是{'文件夹' if pred_is_dir else '文件'}\n"
-            f"  --gt   是{'文件夹' if gt_is_dir   else '文件'}"
+            f"  --gt   是{'文件夹' if gt_is_dir  else '文件'}"
         )
