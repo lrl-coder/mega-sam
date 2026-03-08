@@ -180,9 +180,11 @@ def plot_error_histograms(rot_errors, trans_errors,
                            edgecolor='#6c63ff', labelcolor=COLORS['text'])
 
     _draw_hist(axes[0], rot_errors,
-               xlabel='旋转误差 (度)', title='Rotation Error Distribution', unit='°')
+               xlabel='旋转误差 (度)', title='Rotation Error Distribution',
+               color='#6c63ff', unit='°')
     _draw_hist(axes[1], trans_errors,
-               xlabel='平移误差', title='Translation Error Distribution')
+               xlabel='平移误差', title='Translation Error Distribution',
+               color='#43b5e9')
 
     prefix_str = f" — {title_prefix}" if title_prefix else ""
     fig.suptitle(f'Camera Pose Error Histograms{prefix_str}',
