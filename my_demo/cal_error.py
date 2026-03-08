@@ -106,14 +106,18 @@ def build_gt_index(gt_dir):
 
 
 def plot_error_histograms(rot_errors, trans_errors,
-                          title_prefix="", save_path=None):
+                          title_prefix="", save_path=None,
+                          xlabel_rot="Rotation Error (deg)",
+                          xlabel_trans="Translation Error"):
     """
     绘制旋转误差和平移误差的直方图
 
-    :param rot_errors:   旋转误差数组（度），numpy array 或 torch.Tensor
-    :param trans_errors: 平移误差数组，numpy array 或 torch.Tensor
-    :param title_prefix: 图标题前缀（例如视频 ID 或 "ALL"）
-    :param save_path:    若不为 None，则将图片保存到该路径，否则弹窗显示
+    :param rot_errors:    旋转误差数组（度），numpy array 或 torch.Tensor
+    :param trans_errors:  平移误差数组，numpy array 或 torch.Tensor
+    :param title_prefix:  图标题前缀（例如视频 ID 或 "ALL"）
+    :param save_path:     若不为 None，则将图片保存到该路径，否则弹窗显示
+    :param xlabel_rot:    左子图 x 轴标签（默认逐帧模式）
+    :param xlabel_trans:  右子图 x 轴标签（默认逐帧模式）
     """
     if isinstance(rot_errors, torch.Tensor):
         rot_errors = rot_errors.cpu().numpy()
@@ -180,11 +184,11 @@ def plot_error_histograms(rot_errors, trans_errors,
         ax.autoscale(axis='x', tight=False)
 
     _draw_hist(axes[0], rot_errors,
-               xlabel='Rotation Error (deg)', title='Rotation Error Distribution',
+               xlabel=xlabel_rot, title='Rotation Error Distribution',
                bar_color='#4C72B0', mean_color='#C44E52', median_color='#2CA02C',
                unit='°')
     _draw_hist(axes[1], trans_errors,
-               xlabel='Translation Error', title='Translation Error Distribution',
+               xlabel=xlabel_trans, title='Translation Error Distribution',
                bar_color='#DD8452', mean_color='#C44E52', median_color='#2CA02C')
 
     prefix_str = f" — {title_prefix}" if title_prefix else ""
@@ -255,8 +259,10 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
         print(f"[错误] 预测目录中未找到 *_poses.npy 文件: {pred_dir}")
         return
 
-    all_rot_errs   = []
-    all_trans_errs = []
+    all_rot_errs    = []
+    all_trans_errs  = []
+    per_video_rot   = []   # 每视频均值旋转误差（直方图用）
+    per_video_trans = []   # 每视频均值平移误差（直方图用）
     details_rows   = []   # 逐帧明细
     summary_rows   = []   # 每视频汇总
     matched = 0
@@ -312,6 +318,8 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
 
             all_rot_errs.append(rot_err)
             all_trans_errs.append(trans_err)
+            per_video_rot.append(rot_err.mean().item())
+            per_video_trans.append(trans_err.mean().item())
             matched += 1
 
         except Exception as e:
@@ -351,8 +359,14 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
         if _should_plot:
             save_path = os.path.join(output_dir, "error_histograms.png") \
                         if output_dir else None
-            plot_error_histograms(all_rot_cat, all_trans_cat,
-                                  title_prefix="ALL", save_path=save_path)
+            plot_error_histograms(
+                np.array(per_video_rot),
+                np.array(per_video_trans),
+                title_prefix="ALL (per-video mean)",
+                save_path=save_path,
+                xlabel_rot="Mean Rotation Error per Video (deg)",
+                xlabel_trans="Mean Translation Error per Video",
+            )
 
 
 def evaluate_single_file(pred_path, gt_path, output_dir=None, plot=True):
