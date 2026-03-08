@@ -108,16 +108,18 @@ def build_gt_index(gt_dir):
 def plot_error_histograms(rot_errors, trans_errors,
                           title_prefix="", save_path=None,
                           xlabel_rot="Rotation Error (deg)",
-                          xlabel_trans="Translation Error"):
+                          xlabel_trans="Translation Error",
+                          clip_percentile=None):
     """
     绘制旋转误差和平移误差的直方图
 
-    :param rot_errors:    旋转误差数组（度），numpy array 或 torch.Tensor
-    :param trans_errors:  平移误差数组，numpy array 或 torch.Tensor
-    :param title_prefix:  图标题前缀（例如视频 ID 或 "ALL"）
-    :param save_path:     若不为 None，则将图片保存到该路径，否则弹窗显示
-    :param xlabel_rot:    左子图 x 轴标签（默认逐帧模式）
-    :param xlabel_trans:  右子图 x 轴标签（默认逐帧模式）
+    :param rot_errors:      旋转误差数组（度），numpy array 或 torch.Tensor
+    :param trans_errors:    平移误差数组，numpy array 或 torch.Tensor
+    :param title_prefix:    图标题前缀（例如视频 ID 或 "ALL"）
+    :param save_path:       若不为 None，则将图片保存到该路径，否则弹窗显示
+    :param xlabel_rot:      左子图 x 轴标签
+    :param xlabel_trans:    右子图 x 轴标签
+    :param clip_percentile: 若指定（例如 95），则仅显示两个数组中均 <= 该百分位数的样本，用于去除离群点
     """
     if isinstance(rot_errors, torch.Tensor):
         rot_errors = rot_errors.cpu().numpy()
@@ -126,6 +128,23 @@ def plot_error_histograms(rot_errors, trans_errors,
 
     rot_errors   = rot_errors.astype(float)
     trans_errors = trans_errors.astype(float)
+
+    # --- 离群点裁剪 ---
+    n_total = len(rot_errors)
+    clip_info = ""   # 裁剪信息，写入图标题
+    if clip_percentile is not None:
+        thr_rot   = np.percentile(rot_errors,   clip_percentile)
+        thr_trans = np.percentile(trans_errors, clip_percentile)
+        mask = (rot_errors <= thr_rot) & (trans_errors <= thr_trans)
+        n_removed = int((~mask).sum())
+        rot_errors   = rot_errors[mask]
+        trans_errors = trans_errors[mask]
+        clip_info = (f" [clipped @P{clip_percentile}: "
+                     f"kept {len(rot_errors)}/{n_total}, "
+                     f"removed {n_removed}]")
+        print(f"[Plot] Clip @P{clip_percentile}: "
+              f"rot_thr={thr_rot:.4f}, trans_thr={thr_trans:.6f}, "
+              f"removed {n_removed}/{n_total} samples")
 
     plt.rcParams.update({
         'figure.facecolor': 'white',
@@ -192,7 +211,7 @@ def plot_error_histograms(rot_errors, trans_errors,
                bar_color='#DD8452', mean_color='#C44E52', median_color='#2CA02C')
 
     prefix_str = f" — {title_prefix}" if title_prefix else ""
-    fig.suptitle(f'Camera Pose Error Histograms{prefix_str}',
+    fig.suptitle(f'Camera Pose Error Histograms{prefix_str}{clip_info}',
                  fontsize=13, fontweight='bold', y=1.01, color='#222222')
     plt.tight_layout()
 
@@ -357,15 +376,30 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
             save_csv(output_dir, details_rows, summary_rows)
 
         if _should_plot:
-            save_path = os.path.join(output_dir, "error_histograms.png") \
-                        if output_dir else None
+            rot_arr   = np.array(per_video_rot)
+            trans_arr = np.array(per_video_trans)
+
+            # --- 图1：全量数据 ---
+            save_path_full = os.path.join(output_dir, "error_histograms.png") \
+                             if output_dir else None
             plot_error_histograms(
-                np.array(per_video_rot),
-                np.array(per_video_trans),
+                rot_arr, trans_arr,
                 title_prefix="ALL (per-video mean)",
-                save_path=save_path,
+                save_path=save_path_full,
                 xlabel_rot="Mean Rotation Error per Video (deg)",
                 xlabel_trans="Mean Translation Error per Video",
+            )
+
+            # --- 图2：去除离群点（P95）---
+            save_path_filt = os.path.join(output_dir, "error_histograms_filtered.png") \
+                             if output_dir else None
+            plot_error_histograms(
+                rot_arr, trans_arr,
+                title_prefix="ALL (per-video mean)",
+                save_path=save_path_filt,
+                xlabel_rot="Mean Rotation Error per Video (deg)",
+                xlabel_trans="Mean Translation Error per Video",
+                clip_percentile=95,
             )
 
 
