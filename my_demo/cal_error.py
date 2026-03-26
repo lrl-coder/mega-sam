@@ -349,36 +349,34 @@ def evaluate_folder(pred_dir, gt_dir, output_dir=None, plot=True):
     print(f"批量评测完成: 成功 {matched} 个，跳过/失败 {skipped} 个")
 
     if all_rot_errs:
-        all_rot_cat   = torch.cat(all_rot_errs)
-        all_trans_cat = torch.cat(all_trans_errs)
+        # 与绘图使用相同的数据：每视频均值数组
+        rot_arr   = np.array(per_video_rot)
+        trans_arr = np.array(per_video_trans)
 
-        print("\n===== 全局汇总（所有视频所有帧）=====")
-        print(f"  平均旋转误差 : {all_rot_cat.mean().item():.4f} 度")
-        print(f"  中位旋转误差 : {all_rot_cat.median().item():.4f} 度")
-        print(f"  标准差旋转误差: {all_rot_cat.std().item():.4f} 度")
-        print(f"  平均平移误差 : {all_trans_cat.mean().item():.6f}")
-        print(f"  中位平移误差 : {all_trans_cat.median().item():.6f}")
-        print(f"  标准差平移误差: {all_trans_cat.std().item():.6f}")
+        print("\n===== 全局汇总（每视频均值）=====")
+        print(f"  平均旋转误差 : {rot_arr.mean():.4f} 度")
+        print(f"  中位旋转误差 : {float(np.median(rot_arr)):.4f} 度")
+        print(f"  标准差旋转误差: {rot_arr.std():.4f} 度")
+        print(f"  平均平移误差 : {trans_arr.mean():.6f}")
+        print(f"  中位平移误差 : {float(np.median(trans_arr)):.6f}")
+        print(f"  标准差平移误差: {trans_arr.std():.6f}")
 
-        # 全局汇总追加到 summary_rows 末尾
+        # 全局汇总追加到 summary_rows 末尾（与绘图数据一致：每视频均值）
         summary_rows.append([
             "ALL",
-            len(all_rot_cat),
-            f"{all_rot_cat.mean().item():.6f}",
-            f"{all_rot_cat.median().item():.6f}",
-            f"{all_rot_cat.std().item():.6f}",
-            f"{all_trans_cat.mean().item():.8f}",
-            f"{all_trans_cat.median().item():.8f}",
-            f"{all_trans_cat.std().item():.8f}",
+            len(rot_arr),
+            f"{rot_arr.mean():.6f}",
+            f"{float(np.median(rot_arr)):.6f}",
+            f"{rot_arr.std():.6f}",
+            f"{trans_arr.mean():.8f}",
+            f"{float(np.median(trans_arr)):.8f}",
+            f"{trans_arr.std():.8f}",
         ])
 
         if output_dir:
             save_csv(output_dir, details_rows, summary_rows)
 
         if _should_plot:
-            rot_arr   = np.array(per_video_rot)
-            trans_arr = np.array(per_video_trans)
-
             # --- 图1：全量数据 ---
             save_path_full = os.path.join(output_dir, "error_histograms.png") \
                              if output_dir else None
