@@ -166,7 +166,7 @@ def plot_error_histograms(rot_errors, trans_errors,
     fig.patch.set_facecolor('white')
 
     def _draw_hist(ax, data, xlabel, title, bar_color, mean_color, median_color, unit=""):
-        n_bins = max(20, min(60, len(data) // 3))
+        n_bins = max(50, min(60, len(data) // 3))
         ax.hist(data, bins=n_bins,
                 color=bar_color, edgecolor='white', linewidth=0.5, alpha=0.82)
 
@@ -217,7 +217,7 @@ def plot_error_histograms(rot_errors, trans_errors,
 
     if save_path:
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"[图表] 直方图已保存: {save_path}")
     else:
         plt.show()
